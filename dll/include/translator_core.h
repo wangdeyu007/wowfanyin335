@@ -70,9 +70,8 @@ private:
     std::thread workerThread;
     std::atomic<bool> running;
 
-    // Baidu API credentials (stored in memory only, set from Lua config)
-    std::string baiduAppId;
-    std::string baiduSecret;
+    // Baidu API key (single key with Bearer token, set from Lua config)
+    std::string baiduApiKey;
 
     static const DWORD CACHE_EXPIRY_MS = 3600000;
     static const size_t MAX_CACHE_SIZE = 500;
@@ -80,6 +79,9 @@ private:
     std::string UrlEncode(const std::string& text);
     std::string HttpsGet(const std::string& path);
     std::string HttpsPostJson(const std::string& path, const std::string& body);
+    std::string HttpsPostJsonAuth(const std::string& host, const std::string& path,
+                                  const std::string& body, const std::string& bearer);
+    std::string EscapeJsonString(const std::string& text);
     std::string MapLangCode(const std::string& lang);
     std::string ParseGoogleFreeResponse(const std::string& json);
     std::string ParseTranSmartResponse(const std::string& json);
@@ -91,10 +93,6 @@ private:
     void WorkerThreadFunc();
 
     // Baidu Translate
-    std::string Md5Hex(const std::string& input);
-    std::string SimpleHttpsGet(const std::string& host, int port,
-                               const std::string& path,
-                               const std::string& referer = "");
     TranslationResult TranslateBaidu(const std::string& text, std::string& result,
                                      const std::string& sourceLang,
                                      const std::string& targetLang);
@@ -107,8 +105,8 @@ public:
     void Cleanup();
     bool IsInitialized() const { return initialized; }
 
-    // Set Baidu API credentials (called from Lua)
-    void SetBaiduKey(const std::string& appid, const std::string& secret);
+    // Set Baidu API key (Bearer token, called from Lua)
+    void SetBaiduKey(const std::string& apiKey);
 
     TranslationResult TranslateText(const std::string& text, std::string& result,
                                     const std::string& sourceLang = "zh",

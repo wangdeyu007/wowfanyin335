@@ -553,115 +553,61 @@ string TranslationClient::ParseGoogleFreeResponse(const string& json) {
 // ============================================================================
 
 // Set Baidu API credentials (called from Lua via UnitXP)
-void TranslationClient::SetBaiduKey(const string& appid, const string& secret) {
-    baiduAppId = appid;
-    baiduSecret = secret;
-    LOG_INFO("Baidu API key set: appid=" + appid.substr(0, 4) + "****");
+void TranslationClient::SetBaiduKey(const string& apiKey) {
+    baiduApiKey = apiKey;
+    string preview = apiKey.length() > 4 ? apiKey.substr(0, 4) + "****" : apiKey;
+    LOG_INFO("Baidu API key set: " + preview);
 }
 
-// Compute MD5 hex digest using Windows CryptoAPI
-string TranslationClient::Md5Hex(const string& input) {
-    HCRYPTPROV hProv = 0;
-    HCRYPTHASH hHash = 0;
-    BYTE hash[16];
-    DWORD hashLen = 16;
-    char hex[3];
-
-    string result;
-    result.reserve(32);
-
-    if (!CryptAcquireContextA(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-        LOG_ERROR("Md5Hex: CryptAcquireContext failed: " + to_string(GetLastError()));
-        return "";
-    }
-    if (!CryptCreateHash(hProv, CALG_MD5, 0, 0, &hHash)) {
-        LOG_ERROR("Md5Hex: CryptCreateHash failed: " + to_string(GetLastError()));
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-    if (!CryptHashData(hHash, (BYTE*)input.c_str(), (DWORD)input.length(), 0)) {
-        LOG_ERROR("Md5Hex: CryptHashData failed: " + to_string(GetLastError()));
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0)) {
-        LOG_ERROR("Md5Hex: CryptGetHashParam failed: " + to_string(GetLastError()));
-        CryptDestroyHash(hHash);
-        CryptReleaseContext(hProv, 0);
-        return "";
-    }
-
-    CryptDestroyHash(hHash);
-    CryptReleaseContext(hProv, 0);
-
-    for (int i = 0; i < 16; i++) {
-        sprintf_s(hex, "%02x", hash[i]);
-        result += hex;
-    }
-    return result;
-}
-
-// One-shot HTTPS GET to an arbitrary host (used for Baidu API since it's
-// a different host than the TranSmart connection).
-string TranslationClient::SimpleHttpsGet(const string& host, int port,
-                                          const string& path,
-                                          const string& referer) {
-    // Use DEFAULT_PROXY so the system proxy is respected (no IE proxy read here;
-    // the caller already handles that via the main session).
+// HTTPS POST JSON with Bearer token auth to an arbitrary host.
+string TranslationClient::HttpsPostJsonAuth(const string& host, const string& path,
+                                            const string& body, const string& bearer) {
     HINTERNET hSession = WinHttpOpen(L"WoWTranslate/1.0",
                                       WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                       WINHTTP_NO_PROXY_NAME,
-                                      WINHTTP_NO_PROXY_BYPASS,
-                                      0);
+                                      WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) {
-        LOG_ERROR("SimpleHttpsGet: WinHttpOpen failed");
+        LOG_ERROR("HttpsPostJsonAuth: WinHttpOpen failed");
         return "";
     }
 
     WinHttpSetTimeouts(hSession, 8000, 8000, 8000, 8000);
 
     wstring wHost(host.begin(), host.end());
-    HINTERNET hConnect = WinHttpConnect(hSession, wHost.c_str(),
-                                         static_cast<INTERNET_PORT>(port), 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, wHost.c_str(), 443, 0);
     if (!hConnect) {
-        LOG_ERROR("SimpleHttpsGet: WinHttpConnect failed for " + host);
+        LOG_ERROR("HttpsPostJsonAuth: WinHttpConnect failed for " + host);
         WinHttpCloseHandle(hSession);
         return "";
     }
 
     wstring wPath(path.begin(), path.end());
     HINTERNET hRequest = WinHttpOpenRequest(
-        hConnect, L"GET", wPath.c_str(), nullptr,
+        hConnect, L"POST", wPath.c_str(), nullptr,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
         WINHTTP_FLAG_SECURE);
 
     if (!hRequest) {
-        LOG_ERROR("SimpleHttpsGet: WinHttpOpenRequest failed");
+        LOG_ERROR("HttpsPostJsonAuth: WinHttpOpenRequest failed");
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return "";
     }
 
-    wstring headers = L"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                       L"AppleWebKit/537.36 (KHTML, like Gecko) "
-                       L"Chrome/120.0.0.0 Safari/537.36\r\n";
-    if (!referer.empty()) {
-        wstring wRef(referer.begin(), referer.end());
-        headers += L"Referer: " + wRef + L"\r\n";
-    }
-    WinHttpAddRequestHeaders(hRequest, headers.c_str(), (DWORD)-1,
-                             WINHTTP_ADDREQ_FLAG_ADD);
+    wstring wAuth = L"Authorization: Bearer " + wstring(bearer.begin(), bearer.end());
+    wstring wContentType = L"Content-Type: application/json";
+    WinHttpAddRequestHeaders(hRequest, wAuth.c_str(), (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
+    WinHttpAddRequestHeaders(hRequest, wContentType.c_str(), (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
 
     string response;
     BOOL result = WinHttpSendRequest(hRequest,
                                      WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                     nullptr, 0, 0, 0);
+                                     (LPVOID)body.c_str(), (DWORD)body.length(),
+                                     (DWORD)body.length(), 0);
     if (result && WinHttpReceiveResponse(hRequest, nullptr)) {
         DWORD bytesAvailable = 0;
         char buffer[8192];
-        while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable)
-               && bytesAvailable > 0) {
+        while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0) {
             DWORD bytesRead = 0;
             DWORD bytesToRead = min(bytesAvailable, (DWORD)(sizeof(buffer) - 1));
             if (WinHttpReadData(hRequest, buffer, bytesToRead, &bytesRead)) {
@@ -672,7 +618,7 @@ string TranslationClient::SimpleHttpsGet(const string& host, int port,
             }
         }
     } else {
-        LOG_ERROR("SimpleHttpsGet: request failed for " + host + path);
+        LOG_ERROR("HttpsPostJsonAuth: request failed for " + host + path);
     }
 
     WinHttpCloseHandle(hRequest);
@@ -681,9 +627,38 @@ string TranslationClient::SimpleHttpsGet(const string& host, int port,
     return response;
 }
 
+// Escape a string for inclusion in a JSON body. Minimal implementation
+// (handles the cases we see in chat: quote, backslash, control chars, BMP runes).
+string TranslationClient::EscapeJsonString(const string& text) {
+    string out;
+    out.reserve(text.size() + 8);
+    for (size_t i = 0; i < text.size(); i++) {
+        unsigned char c = (unsigned char)text[i];
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    sprintf_s(buf, "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += (char)c;
+                }
+        }
+    }
+    return out;
+}
+
 // Parse Baidu Translate API response
 // Expected format:
 //   {"from":"zh","to":"ru","trans_result":[{"src":"你好","dst":"Здравствуйте"}]}
+// or on error: {"error_code":"...","error_msg":"..."}
 string TranslationClient::ParseBaiduResponse(const string& json) {
     // Find "dst" field in the first trans_result entry
     string key = "\"dst\"";
@@ -728,62 +703,47 @@ string TranslationClient::ParseBaiduResponse(const string& json) {
     return segment;
 }
 
-// Translate via Baidu API (fanyi-api.baidu.com)
-// Requires appid + secret set via SetBaiduKey().
-// Signature: md5(appid + text + salt + secret)
+// Translate via Baidu Translate API (Bearer token auth)
 TranslationResult TranslationClient::TranslateBaidu(const string& text, string& result,
                                                       const string& sourceLang,
                                                       const string& targetLang) {
-    if (baiduAppId.empty() || baiduSecret.empty()) {
+    if (baiduApiKey.empty()) {
         LOG_DEBUG("Baidu: API key not configured, skipping");
         return TranslationResult::INVALID_PARAMS;
     }
 
-    // Generate salt (random number as string)
-    DWORD salt = GetTickCount();
-    string saltStr = to_string(salt);
-
-    // Sign: md5(appid + original_text + salt + secret)
-    // IMPORTANT: sign is calculated from the ORIGINAL text (not URL-encoded)
-    string signInput = baiduAppId + text + saltStr + baiduSecret;
-    string sign = Md5Hex(signInput);
-
-    if (sign.empty()) {
-        LOG_ERROR("Baidu: MD5 sign computation failed");
-        return TranslationResult::ENCODING_ERROR;
-    }
-
-    // Map language codes: Baidu uses "zh", "en", "ru", "ja", "ko" (same as TranSmart)
+    // Map language codes: Baidu uses "zh", "en", "ru", "ja", "ko"
     string sl = sourceLang;
     string tl = targetLang;
     if (sl == "zh-CN" || sl == "zh-TW") sl = "zh";
     if (tl == "zh-CN" || tl == "zh-TW") tl = "zh";
 
-    // Build URL: GET /api/trans/vip/translate?q=...&from=...&to=...&appid=...&salt=...&sign=...
-    string path = "/api/trans/vip/translate?q=" + UrlEncode(text)
-                + "&from=" + sl
-                + "&to=" + tl
-                + "&appid=" + baiduAppId
-                + "&salt=" + saltStr
-                + "&sign=" + sign;
+    // Build JSON body for POST request
+    string body = "{\"from\":\"" + sl + "\",\"to\":\"" + tl
+                + "\",\"q\":\"" + EscapeJsonString(text) + "\"}";
 
-    LOG_DEBUG("Baidu: GET fanyi-api.baidu.com" + path.substr(0, 120) + "...");
+    LOG_DEBUG("Baidu: POST fanyi-api.baidu.com/api/trans/vip/translate");
 
-    string response = SimpleHttpsGet("fanyi-api.baidu.com", 443, path,
-                                      "https://fanyi.baidu.com/");
+    string response = HttpsPostJsonAuth("fanyi-api.baidu.com",
+                                        "/api/trans/vip/translate",
+                                        body, baiduApiKey);
 
     if (response.empty()) {
         LOG_ERROR("Baidu: empty response (network error)");
         return TranslationResult::NETWORK_ERROR;
     }
 
-    // Check for Baidu error codes
+    // Check for error_code (Baidu returns it on auth or quota errors)
     if (response.find("error_code") != string::npos) {
         string errCode = SimpleJsonParser::extractField(response, "error_code");
         string errMsg  = SimpleJsonParser::extractField(response, "error_msg");
         LOG_ERROR("Baidu API error: " + errCode + " - " + errMsg);
         if (errCode == "54001" || errCode == "54003" || errCode == "54004") {
             return TranslationResult::RATE_LIMITED;
+        }
+        if (errCode == "52001" || errCode == "52002" || errCode == "52003" ||
+            errCode == "110" || errCode == "111") {
+            return TranslationResult::INVALID_PARAMS;
         }
         return TranslationResult::API_ERROR;
     }

@@ -393,17 +393,17 @@ end
 -- BAIDU TRANSLATE API KEY CONFIGURATION
 -- ============================================================================
 
--- Pass Baidu Translate API credentials to the DLL.
--- Keys are stored in WoWTranslateDB (WTF/SavedVariables) and never uploaded.
--- Call this on addon load and whenever the user updates their keys.
-function WoWTranslate_API.SetBaiduKey(appid, secret)
+-- Pass Baidu Translate API key to the DLL (Bearer token).
+-- Key is stored in WoWTranslateDB (WTF/SavedVariables) and never uploaded.
+-- Call this on addon load and whenever the user updates their key.
+function WoWTranslate_API.SetBaiduKey(apiKey)
     if not dllAvailable then return false end
-    if not appid or appid == "" or not secret or secret == "" then
+    if not apiKey or apiKey == "" then
         return false
     end
 
     local success, err = pcall(function()
-        UnitXP("WoWTranslate", "set_baidu_key", appid, secret)
+        UnitXP("WoWTranslate", "set_baidu_key", apiKey)
     end)
     if not success then
         return false

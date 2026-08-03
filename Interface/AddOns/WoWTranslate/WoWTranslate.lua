@@ -3653,11 +3653,10 @@ local function OnAddonLoaded()
 
     local dllOk = WoWTranslate_API.CheckDLL()
 
-    -- Pass saved Baidu API credentials to the DLL (if configured)
-    if dllOk and WoWTranslateDB and WoWTranslateDB.baiduAppId
-       and WoWTranslateDB.baiduAppId ~= "" then
-        WoWTranslate_API.SetBaiduKey(WoWTranslateDB.baiduAppId,
-                                     WoWTranslateDB.baiduSecret or "")
+    -- Pass saved Baidu API key to the DLL (if configured)
+    if dllOk and WoWTranslateDB and WoWTranslateDB.baiduApiKey
+       and WoWTranslateDB.baiduApiKey ~= "" then
+        WoWTranslate_API.SetBaiduKey(WoWTranslateDB.baiduApiKey)
     end
 
     local glossaryCount = WoWTranslate_GetGlossaryCount()

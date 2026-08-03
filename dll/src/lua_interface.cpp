@@ -17,7 +17,7 @@
 
 // Minimum Lua stack depth for commands that take N args (excluding the
 // "WoWTranslate" and subcommand strings at indices 1-2).
-//   set_baidu_key:  Index 3 = appid, 4 = secret  -> need gettop >= 4
+//   set_baidu_key:  Index 3 = api_key (Bearer token)  -> need gettop >= 3
 #define NEED_ARGS(n) do { if (lua_gettop(L) < (n)) { \
     lua_pushstring(L, "error|not enough arguments"); return 1; } } while(0)
 
@@ -128,7 +128,7 @@ int __cdecl detoured_UnitXP(void* L) {
 
                     // VERSION - Get version string
                     else if (subcmd == "version") {
-                        lua_pushstring(L, "WoWTranslate v1.5-335.6 - TranSmart + Baidu fallback");
+                        lua_pushstring(L, "WoWTranslate v1.5-335.7 - TranSmart + Baidu (Bearer)");
                         return 1;
                     }
 
@@ -244,17 +244,16 @@ int __cdecl detoured_UnitXP(void* L) {
                         return 1;
                     }
 
-                    // SET BAIDU API KEY - Store Baidu Translate credentials from Lua config
-                    // Args: appid, secret
+                    // SET BAIDU API KEY - Store Baidu Translate API key from Lua config
+                    // Args: api_key (single Bearer token)
                     else if (subcmd == "set_baidu_key") {
-                        NEED_ARGS(4);
+                        NEED_ARGS(3);
                         if (!g_translator) {
                             lua_pushstring(L, "error|translator not initialized");
                             return 1;
                         }
-                        string appid{ lua_tostring(L, 3) };
-                        string secret{ lua_tostring(L, 4) };
-                        g_translator->SetBaiduKey(appid, secret);
+                        string apiKey{ lua_tostring(L, 3) };
+                        g_translator->SetBaiduKey(apiKey);
                         lua_pushstring(L, "ok");
                         LOG_INFO("Baidu API key configured from Lua config");
                         return 1;
