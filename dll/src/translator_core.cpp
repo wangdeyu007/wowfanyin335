@@ -591,7 +591,7 @@ TranslationResult TranslationClient::TranslateText(const string& text, string& r
                   + "\",\"text_list\":[\"" + escaped + "\"]},"
                   + "\"target\":{\"lang_code\":\"" + tl + "\"}}";
 
-    LOG_DEBUG("POST /api/imt body=" + body.substr(0, min<size_t>(body.size(), 200)));
+    LOG_DEBUG("POST /api/imt body=" + body.substr(0, body.size() < 200 ? body.size() : 200));
 
     string response = HttpsPostJson("/api/imt", body);
 
