@@ -15,6 +15,12 @@
 #include "../include/logging.h"
 #include "../include/utils.h"
 
+// Minimum Lua stack depth for commands that take N args (excluding the
+// "WoWTranslate" and subcommand strings at indices 1-2).
+//   set_baidu_key:  Index 3 = appid, 4 = secret  -> need gettop >= 4
+#define NEED_ARGS(n) do { if (lua_gettop(L) < (n)) { \
+    lua_pushstring(L, "error|not enough arguments"); return 1; } } while(0)
+
 using namespace std;
 
 // Function pointer types are declared once in lua_interface.h.
@@ -122,7 +128,7 @@ int __cdecl detoured_UnitXP(void* L) {
 
                     // VERSION - Get version string
                     else if (subcmd == "version") {
-                        lua_pushstring(L, "WoWTranslate v0.13 - Free translation via Google");
+                        lua_pushstring(L, "WoWTranslate v1.5-335.6 - TranSmart + Baidu fallback");
                         return 1;
                     }
 
@@ -235,6 +241,33 @@ int __cdecl detoured_UnitXP(void* L) {
                             return 1;
                         }
                         lua_pushstring(L, "error|text required");
+                        return 1;
+                    }
+
+                    // SET BAIDU API KEY - Store Baidu Translate credentials from Lua config
+                    // Args: appid, secret
+                    else if (subcmd == "set_baidu_key") {
+                        NEED_ARGS(4);
+                        if (!g_translator) {
+                            lua_pushstring(L, "error|translator not initialized");
+                            return 1;
+                        }
+                        string appid{ lua_tostring(L, 3) };
+                        string secret{ lua_tostring(L, 4) };
+                        g_translator->SetBaiduKey(appid, secret);
+                        lua_pushstring(L, "ok");
+                        LOG_INFO("Baidu API key configured from Lua config");
+                        return 1;
+                    }
+
+                    // GET STATUS - Extended status with Baidu key info
+                    else if (subcmd == "status_ext") {
+                        string status = "WoWTranslate: DLL Active, Translator ";
+                        status += (g_translator && g_translator->IsInitialized()) ? "Ready" : "Not Ready";
+                        if (g_translator) {
+                            status += ", Pending: " + to_string(g_translator->GetPendingCount());
+                        }
+                        lua_pushstring(L, status);
                         return 1;
                     }
 

@@ -1,9 +1,14 @@
 // translator_core.cpp - Translation functionality for WoWTranslate
-// Sends POST requests to transmart.qq.com /api/imt (Tencent TranSmart free tier).
-// No API key required; reachable from mainland China without VPN.
+// Primary: POST to transmart.qq.com /api/imt (Tencent TranSmart, no key needed).
+// Fallback: GET fanyi-api.baidu.com (Baidu Translate, requires appid+secret from Lua config).
+//
+// Both APIs are reachable from mainland China without VPN. TranSmart is tried first
+// because it needs no credentials; Baidu is the fallback for language pairs that
+// TranSmart doesn't support (e.g. Chinese -> Russian).
 
 #include <windows.h>
 #include <winhttp.h>
+#include <wincrypt.h>
 #include <string>
 #include <algorithm>
 #include <sstream>
@@ -176,7 +181,7 @@ bool TranslationClient::Initialize() {
     LOG_INFO("Initializing TranSmart (Tencent) translation client");
 
     // 3.3.5's WinHTTP with WINHTTP_ACCESS_TYPE_DEFAULT_PROXY reads the
-    // netsh winhttp config (empty by default → direct connection), NOT
+    // netsh winhttp config (empty by default -> direct connection), NOT
     // the IE/WinINET system proxy. Clash/v2ray set the system proxy via
     // the IE registry keys, so we have to read them ourselves.
     WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ieConfig = {};
@@ -346,7 +351,7 @@ string TranslationClient::HttpsGet(const string& path) {
             &statusCode, &statusLen,
             WINHTTP_NO_HEADER_INDEX);
         if (statusCode == 429) {
-            LOG_WARNING("Rate limited by Google (HTTP 429)");
+            LOG_WARNING("Rate limited by API (HTTP 429)");
             WinHttpCloseHandle(hRequest);
             return "HTTP_429";
         }
@@ -389,7 +394,7 @@ string TranslationClient::HttpsPostJson(const string& path, const string& body) 
     }
 
     // TranSmart rejects requests that don't look like they came from
-    // transmart.qq.com — must set Origin/Referer/User-Agent.
+    // transmart.qq.com -- must set Origin/Referer/User-Agent.
     wstring headers = L"Content-Type: application/json\r\n";
     headers += L"Origin: https://transmart.qq.com\r\n";
     headers += L"Referer: https://transmart.qq.com/\r\n";
@@ -444,10 +449,7 @@ string TranslationClient::HttpsPostJson(const string& path, const string& body) 
 
 string TranslationClient::ParseTranSmartResponse(const string& json) {
     // Actual response shape (confirmed live):
-    //   { "header": {...}, "auto_translation": ["译后文本"], "src_lang": "en", ... }
-    // It is a flat string array — earlier guess of an array of objects with
-    // a "translated_text_list" key was wrong; TranSmart returns the segment
-    // directly in auto_translation[0].
+    //   { "header": {...}, "auto_translation": ["translated text"], "src_lang": "en", ... }
     string key = "\"auto_translation\"";
     size_t keyPos = json.find(key);
     if (keyPos == string::npos) return "";
@@ -546,6 +548,264 @@ string TranslationClient::ParseGoogleFreeResponse(const string& json) {
     return result;
 }
 
+// ============================================================================
+// BAIDU TRANSLATE API
+// ============================================================================
+
+// Set Baidu API credentials (called from Lua via UnitXP)
+void TranslationClient::SetBaiduKey(const string& appid, const string& secret) {
+    baiduAppId = appid;
+    baiduSecret = secret;
+    LOG_INFO("Baidu API key set: appid=" + appid.substr(0, 4) + "****");
+}
+
+// Compute MD5 hex digest using Windows CryptoAPI
+string TranslationClient::Md5Hex(const string& input) {
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    BYTE hash[16];
+    DWORD hashLen = 16;
+    char hex[3];
+
+    string result;
+    result.reserve(32);
+
+    if (!CryptAcquireContextA(&hProv, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        LOG_ERROR("Md5Hex: CryptAcquireContext failed: " + to_string(GetLastError()));
+        return "";
+    }
+    if (!CryptCreateHash(hProv, CALG_MD5, 0, 0, &hHash)) {
+        LOG_ERROR("Md5Hex: CryptCreateHash failed: " + to_string(GetLastError()));
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+    if (!CryptHashData(hHash, (BYTE*)input.c_str(), (DWORD)input.length(), 0)) {
+        LOG_ERROR("Md5Hex: CryptHashData failed: " + to_string(GetLastError()));
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+    if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0)) {
+        LOG_ERROR("Md5Hex: CryptGetHashParam failed: " + to_string(GetLastError()));
+        CryptDestroyHash(hHash);
+        CryptReleaseContext(hProv, 0);
+        return "";
+    }
+
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+
+    for (int i = 0; i < 16; i++) {
+        sprintf_s(hex, "%02x", hash[i]);
+        result += hex;
+    }
+    return result;
+}
+
+// One-shot HTTPS GET to an arbitrary host (used for Baidu API since it's
+// a different host than the TranSmart connection).
+string TranslationClient::SimpleHttpsGet(const string& host, int port,
+                                          const string& path,
+                                          const string& referer) {
+    // Use DEFAULT_PROXY so the system proxy is respected (no IE proxy read here;
+    // the caller already handles that via the main session).
+    HINTERNET hSession = WinHttpOpen(L"WoWTranslate/1.0",
+                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                      WINHTTP_NO_PROXY_NAME,
+                                      WINHTTP_NO_PROXY_BYPASS,
+                                      0);
+    if (!hSession) {
+        LOG_ERROR("SimpleHttpsGet: WinHttpOpen failed");
+        return "";
+    }
+
+    WinHttpSetTimeouts(hSession, 8000, 8000, 8000, 8000);
+
+    wstring wHost(host.begin(), host.end());
+    HINTERNET hConnect = WinHttpConnect(hSession, wHost.c_str(),
+                                         static_cast<INTERNET_PORT>(port), 0);
+    if (!hConnect) {
+        LOG_ERROR("SimpleHttpsGet: WinHttpConnect failed for " + host);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    wstring wPath(path.begin(), path.end());
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect, L"GET", wPath.c_str(), nullptr,
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE);
+
+    if (!hRequest) {
+        LOG_ERROR("SimpleHttpsGet: WinHttpOpenRequest failed");
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return "";
+    }
+
+    wstring headers = L"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       L"AppleWebKit/537.36 (KHTML, like Gecko) "
+                       L"Chrome/120.0.0.0 Safari/537.36\r\n";
+    if (!referer.empty()) {
+        wstring wRef(referer.begin(), referer.end());
+        headers += L"Referer: " + wRef + L"\r\n";
+    }
+    WinHttpAddRequestHeaders(hRequest, headers.c_str(), (DWORD)-1,
+                             WINHTTP_ADDREQ_FLAG_ADD);
+
+    string response;
+    BOOL result = WinHttpSendRequest(hRequest,
+                                     WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                     nullptr, 0, 0, 0);
+    if (result && WinHttpReceiveResponse(hRequest, nullptr)) {
+        DWORD bytesAvailable = 0;
+        char buffer[8192];
+        while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable)
+               && bytesAvailable > 0) {
+            DWORD bytesRead = 0;
+            DWORD bytesToRead = min(bytesAvailable, (DWORD)(sizeof(buffer) - 1));
+            if (WinHttpReadData(hRequest, buffer, bytesToRead, &bytesRead)) {
+                buffer[bytesRead] = '\0';
+                response += string(buffer, bytesRead);
+            } else {
+                break;
+            }
+        }
+    } else {
+        LOG_ERROR("SimpleHttpsGet: request failed for " + host + path);
+    }
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+    return response;
+}
+
+// Parse Baidu Translate API response
+// Expected format:
+//   {"from":"zh","to":"ru","trans_result":[{"src":"你好","dst":"Здравствуйте"}]}
+string TranslationClient::ParseBaiduResponse(const string& json) {
+    // Find "dst" field in the first trans_result entry
+    string key = "\"dst\"";
+    size_t keyPos = json.find(key);
+    if (keyPos == string::npos) return "";
+
+    size_t colonPos = json.find(":", keyPos + key.length());
+    if (colonPos == string::npos) return "";
+
+    size_t start = json.find('"', colonPos);
+    if (start == string::npos) return "";
+    start++;
+
+    string segment;
+    while (start < json.size() && json[start] != '"') {
+        if (json[start] == '\\' && start + 1 < json.size()) {
+            start++;
+            switch (json[start]) {
+                case '"':  segment += '"';  break;
+                case '\\': segment += '\\'; break;
+                case 'n':  segment += '\n'; break;
+                case 'r':  segment += '\r'; break;
+                case 't':  segment += '\t'; break;
+                case 'u': {
+                    if (start + 4 < json.size()) {
+                        string hex = json.substr(start + 1, 4);
+                        try {
+                            unsigned int cp = stoul(hex, nullptr, 16);
+                            segment += ConvertCodepointToUTF8(cp);
+                            start += 4;
+                        } catch (...) {}
+                    }
+                    break;
+                }
+                default: segment += json[start]; break;
+            }
+        } else {
+            segment += json[start];
+        }
+        start++;
+    }
+    return segment;
+}
+
+// Translate via Baidu API (fanyi-api.baidu.com)
+// Requires appid + secret set via SetBaiduKey().
+// Signature: md5(appid + text + salt + secret)
+TranslationResult TranslationClient::TranslateBaidu(const string& text, string& result,
+                                                      const string& sourceLang,
+                                                      const string& targetLang) {
+    if (baiduAppId.empty() || baiduSecret.empty()) {
+        LOG_DEBUG("Baidu: API key not configured, skipping");
+        return TranslationResult::INVALID_PARAMS;
+    }
+
+    // Generate salt (random number as string)
+    DWORD salt = GetTickCount();
+    string saltStr = to_string(salt);
+
+    // Sign: md5(appid + original_text + salt + secret)
+    // IMPORTANT: sign is calculated from the ORIGINAL text (not URL-encoded)
+    string signInput = baiduAppId + text + saltStr + baiduSecret;
+    string sign = Md5Hex(signInput);
+
+    if (sign.empty()) {
+        LOG_ERROR("Baidu: MD5 sign computation failed");
+        return TranslationResult::ENCODING_ERROR;
+    }
+
+    // Map language codes: Baidu uses "zh", "en", "ru", "ja", "ko" (same as TranSmart)
+    string sl = sourceLang;
+    string tl = targetLang;
+    if (sl == "zh-CN" || sl == "zh-TW") sl = "zh";
+    if (tl == "zh-CN" || tl == "zh-TW") tl = "zh";
+
+    // Build URL: GET /api/trans/vip/translate?q=...&from=...&to=...&appid=...&salt=...&sign=...
+    string path = "/api/trans/vip/translate?q=" + UrlEncode(text)
+                + "&from=" + sl
+                + "&to=" + tl
+                + "&appid=" + baiduAppId
+                + "&salt=" + saltStr
+                + "&sign=" + sign;
+
+    LOG_DEBUG("Baidu: GET fanyi-api.baidu.com" + path.substr(0, 120) + "...");
+
+    string response = SimpleHttpsGet("fanyi-api.baidu.com", 443, path,
+                                      "https://fanyi.baidu.com/");
+
+    if (response.empty()) {
+        LOG_ERROR("Baidu: empty response (network error)");
+        return TranslationResult::NETWORK_ERROR;
+    }
+
+    // Check for Baidu error codes
+    if (response.find("error_code") != string::npos) {
+        string errCode = SimpleJsonParser::extractField(response, "error_code");
+        string errMsg  = SimpleJsonParser::extractField(response, "error_msg");
+        LOG_ERROR("Baidu API error: " + errCode + " - " + errMsg);
+        if (errCode == "54001" || errCode == "54003" || errCode == "54004") {
+            return TranslationResult::RATE_LIMITED;
+        }
+        return TranslationResult::API_ERROR;
+    }
+
+    LOG_DEBUG("Baidu response: " + response.substr(0, 200));
+
+    string translation = ParseBaiduResponse(response);
+
+    if (translation.empty()) {
+        LOG_ERROR("Baidu: failed to parse response");
+        return TranslationResult::API_ERROR;
+    }
+
+    result = translation;
+    LOG_DEBUG("Baidu translated: " + text.substr(0, 30) + " -> " + translation.substr(0, 50));
+    return TranslationResult::SUCCESS;
+}
+
+// ============================================================================
+// MAIN TRANSLATE FUNCTION (with fallback)
+// ============================================================================
+
 TranslationResult TranslationClient::TranslateText(const string& text, string& result,
                                                     const string& sourceLang,
                                                     const string& targetLang) {
@@ -564,61 +824,81 @@ TranslationResult TranslationClient::TranslateText(const string& text, string& r
 
     CleanExpiredCache();
 
+    // ---- Primary: TranSmart ----
     // Build TranSmart POST body. Language codes are the short forms TranSmart
     // accepts: "zh", "en", "ru", "ja", "ko", or "auto" for source.
-    string sl = sourceLang;
-    string tl = targetLang;
-    if (sl == "zh-CN") sl = "zh";
-    if (sl == "zh-TW") sl = "zh-TW";
-    if (tl == "zh-CN") tl = "zh";
+    {
+        string sl = sourceLang;
+        string tl = targetLang;
+        if (sl == "zh-CN") sl = "zh";
+        if (sl == "zh-TW") sl = "zh-TW";
+        if (tl == "zh-CN") tl = "zh";
 
-    // JSON-escape the input text (only the chars that break the body literal)
-    string escaped;
-    escaped.reserve(text.size() + 8);
-    for (unsigned char c : text) {
-        switch (c) {
-            case '"':  escaped += "\\\""; break;
-            case '\\': escaped += "\\\\"; break;
-            case '\n': escaped += "\\n";  break;
-            case '\r': escaped += "\\r";  break;
-            case '\t': escaped += "\\t";  break;
-            default:   escaped += (char)c; break;
+        // JSON-escape the input text
+        string escaped;
+        escaped.reserve(text.size() + 8);
+        for (unsigned char c : text) {
+            switch (c) {
+                case '"':  escaped += "\\\""; break;
+                case '\\': escaped += "\\\\"; break;
+                case '\n': escaped += "\\n";  break;
+                case '\r': escaped += "\\r";  break;
+                case '\t': escaped += "\\t";  break;
+                default:   escaped += (char)c; break;
+            }
+        }
+
+        string body = string("{\"header\":{\"fn\":\"auto_translation\",")
+                      + "\"client_key\":\"desktop-chrome\"},"
+                      + "\"type\":\"Plain\",\"model_category\":\"normal\","
+                      + "\"source\":{\"lang_code\":\"" + sl
+                      + "\",\"text_list\":[\"" + escaped + "\"]},"
+                      + "\"target\":{\"lang_code\":\"" + tl + "\"}}";
+
+        LOG_DEBUG("TranSmart POST /api/imt body=" + body.substr(0, body.size() < 200 ? body.size() : 200));
+
+        string response = HttpsPostJson("/api/imt", body);
+
+        if (response == "HTTP_429") {
+            LOG_WARNING("TranSmart rate limited, falling back to Baidu");
+            // Fall through to Baidu
+        } else if (response.empty()) {
+            LOG_WARNING("TranSmart empty response, falling back to Baidu");
+            // Fall through to Baidu
+        } else {
+            LOG_DEBUG("TranSmart response: " + response.substr(0, 200));
+
+            string translation = ParseTranSmartResponse(response);
+
+            if (!translation.empty()) {
+                // Check if TranSmart returned a useful translation (not "- -" which
+                // means unsupported language pair)
+                if (translation != "- -" && translation != "-") {
+                    cache[cacheKey] = CacheEntry(translation);
+                    result = translation;
+                    LOG_DEBUG("TranSmart translated: " + text.substr(0, 30) + " -> " + translation.substr(0, 50));
+                    return TranslationResult::SUCCESS;
+                } else {
+                    LOG_WARNING("TranSmart returned placeholder '" + translation + "' for " + sl + "->" + tl + ", falling back to Baidu");
+                }
+            } else {
+                LOG_WARNING("TranSmart parse failed, falling back to Baidu");
+            }
         }
     }
 
-    string body = string("{\"header\":{\"fn\":\"auto_translation\",")
-                  + "\"client_key\":\"desktop-chrome\"},"
-                  + "\"type\":\"Plain\",\"model_category\":\"normal\","
-                  + "\"source\":{\"lang_code\":\"" + sl
-                  + "\",\"text_list\":[\"" + escaped + "\"]},"
-                  + "\"target\":{\"lang_code\":\"" + tl + "\"}}";
+    // ---- Fallback: Baidu ----
+    {
+        TranslationResult baiduResult = TranslateBaidu(text, result, sourceLang, targetLang);
+        if (baiduResult == TranslationResult::SUCCESS) {
+            cache[cacheKey] = CacheEntry(result);
+            return TranslationResult::SUCCESS;
+        }
 
-    LOG_DEBUG("POST /api/imt body=" + body.substr(0, body.size() < 200 ? body.size() : 200));
-
-    string response = HttpsPostJson("/api/imt", body);
-
-    if (response == "HTTP_429") {
-        return TranslationResult::RATE_LIMITED;
+        // Both failed
+        LOG_ERROR("All translators failed for " + sourceLang + "->" + targetLang);
+        return baiduResult;
     }
-
-    if (response.empty()) {
-        LOG_ERROR("Empty response from TranSmart");
-        return TranslationResult::NETWORK_ERROR;
-    }
-
-    LOG_DEBUG("Response: " + response.substr(0, 200));
-
-    string translation = ParseTranSmartResponse(response);
-
-    if (translation.empty()) {
-        LOG_ERROR("Failed to parse TranSmart response: " + response.substr(0, 200));
-        return TranslationResult::API_ERROR;
-    }
-
-    cache[cacheKey] = CacheEntry(translation);
-    result = translation;
-    LOG_DEBUG("Translated: " + text.substr(0, 30) + " -> " + translation.substr(0, 50));
-    return TranslationResult::SUCCESS;
 }
 
 // Queue async translation request

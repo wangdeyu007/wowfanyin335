@@ -507,6 +507,65 @@ configFrame.elements.npClassColor   = CreateCheckbox("名字显示职业颜色",
 configFrame.elements.npGuildOOC     = CreateCheckbox("脱战时显示公会",        25,  Y_SP_ROW2, "nameplateGuildOOC",     nil)
 configFrame.elements.npHideHealth   = CreateCheckbox("脱战时隐藏血条", 290, Y_SP_ROW2, "nameplateHideHealthOOC", nil)
 
+-- ============================================================================
+-- 百度翻译 API 密钥设置
+-- ============================================================================
+local Y_BAIDU_HEADER  = Y_SP_ROW2 - 50
+local Y_BAIDU_APPID   = Y_BAIDU_HEADER - 30
+local Y_BAIDU_SECRET  = Y_BAIDU_APPID - 30
+
+local baiduHeader = configFrame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+baiduHeader:SetPoint("TOPLEFT", configFrame, "TOPLEFT", 25, Y_BAIDU_HEADER)
+baiduHeader:SetText("百度翻译 API（用于俄语等 TranSmart 不支持的语言）：")
+baiduHeader:SetTextColor(0, 1, 0)
+
+-- AppID 输入框
+local baiduAppIdLabel = configFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+baiduAppIdLabel:SetPoint("TOPLEFT", configFrame, "TOPLEFT", 25, Y_BAIDU_APPID)
+baiduAppIdLabel:SetText("AppID：")
+
+local baiduAppIdInput = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate")
+baiduAppIdInput:SetWidth(200)
+baiduAppIdInput:SetHeight(20)
+baiduAppIdInput:SetPoint("TOPLEFT", configFrame, "TOPLEFT", 90, Y_BAIDU_APPID)
+baiduAppIdInput:SetAutoFocus(false)
+baiduAppIdInput:SetText((WoWTranslateDB and WoWTranslateDB.baiduAppId) or "")
+
+-- Secret 输入框
+local baiduSecretLabel = configFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+baiduSecretLabel:SetPoint("TOPLEFT", configFrame, "TOPLEFT", 25, Y_BAIDU_SECRET)
+baiduSecretLabel:SetText("Secret：")
+
+local baiduSecretInput = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate")
+baiduSecretInput:SetWidth(300)
+baiduSecretInput:SetHeight(20)
+baiduSecretInput:SetPoint("TOPLEFT", configFrame, "TOPLEFT", 90, Y_BAIDU_SECRET)
+baiduSecretInput:SetAutoFocus(false)
+baiduSecretInput:SetText((WoWTranslateDB and WoWTranslateDB.baiduSecret) or "")
+
+-- 保存到 DB 并传给 DLL
+local function SaveBaiduKey()
+    local appid = baiduAppIdInput:GetText() or ""
+    local secret = baiduSecretInput:GetText() or ""
+    if not WoWTranslateDB then WoWTranslateDB = {} end
+    WoWTranslateDB.baiduAppId = appid
+    WoWTranslateDB.baiduSecret = secret
+    -- 传给 DLL
+    if WoWTranslate_API and WoWTranslate_API.SetBaiduKey then
+        WoWTranslate_API.SetBaiduKey(appid, secret)
+    end
+end
+
+-- 在保存时同时保存百度 key
+local origSaveFunc = saveBtn:GetScript("OnClick")
+saveBtn:SetScript("OnClick", function()
+    SaveBaiduKey()
+    if origSaveFunc then origSaveFunc() end
+end)
+
+configFrame.elements.baiduAppIdInput = baiduAppIdInput
+configFrame.elements.baiduSecretInput = baiduSecretInput
+
 -- 底部按钮
 local clearBtn = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate")
 clearBtn:SetPoint("BOTTOMLEFT", configFrame, "BOTTOMLEFT", 25, 12)

@@ -2587,16 +2587,22 @@ local function HookChatFrames(force)
                     frame.WoWTranslate_OrigScript = origScript  -- persist for safe re-hook
                     frame.WoWTranslateHooked = true
 
-                    frame:SetScript("OnEvent", function()
+                    frame:SetScript("OnEvent", function(self, event, ...)
                         hookCallCount = hookCallCount + 1
 
-                        -- Capture event globals before origScript may clobber them
+                        -- Collect ALL event args via ... — origScript (the original
+                        -- ChatFrame_OnEvent) uses arg5+ for filter checks (e.g. CHAT_MSG_CHANNEL's
+                        -- arg8 = line ID, arg9 = hideInChatLog, arg5-7 = swatch r/g/b). Truncating
+                        -- to 6 args caused origScript to mis-evaluate the filter and silently
+                        -- drop messages on channels like PARTY when 128+ messages were buffered.
+                        -- v1.3 used this exact pattern; reverting restores original behavior.
+                        local eventArgs   = {...}
                         local capturedEvent = event
-                        local capturedArg1  = arg1
-                        local capturedArg2  = arg2
-                        local capturedArg3  = arg3  -- not used by 1.12, but 3.3.5 has it; pass through to keep origScript arg positions stable
-                        local capturedArg4  = arg4  -- channel name string for CHAT_MSG_CHANNEL
-                        local capturedThis  = this
+                        local capturedArg1  = eventArgs[1]
+                        local capturedArg2  = eventArgs[2]
+                        local capturedArg3  = eventArgs[3]
+                        local capturedArg4  = eventArgs[4]
+                        local capturedThis  = self
 
                         -- Wrap in pcall: an unhandled Lua error in a SetScript handler
                         -- silently disables it in WoW 1.12. Capture the error for debug.
@@ -2638,7 +2644,7 @@ local function HookChatFrames(force)
                                 end
                             end
 
-                            local origOk, origErr = pcall(origScript, capturedThis, capturedEvent, capturedArg1, capturedArg2, capturedArg3, capturedArg4)
+                            local origOk, origErr = pcall(origScript, capturedThis, capturedEvent, unpack(eventArgs))
 							
                             -- Always restore; never leave our wrapper or a nil in place.
                             capturedThis.AddMessage = origFrameAddMsg
@@ -3646,6 +3652,13 @@ local function OnAddonLoaded()
     CreateOutgoingButton()
 
     local dllOk = WoWTranslate_API.CheckDLL()
+
+    -- Pass saved Baidu API credentials to the DLL (if configured)
+    if dllOk and WoWTranslateDB and WoWTranslateDB.baiduAppId
+       and WoWTranslateDB.baiduAppId ~= "" then
+        WoWTranslate_API.SetBaiduKey(WoWTranslateDB.baiduAppId,
+                                     WoWTranslateDB.baiduSecret or "")
+    end
 
     local glossaryCount = WoWTranslate_GetGlossaryCount()
     local cacheCount = WoWTranslate_CacheStats().entries

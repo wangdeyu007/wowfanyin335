@@ -390,6 +390,28 @@ function WoWTranslate_API.ResetBackoff()
 end
 
 -- ============================================================================
+-- BAIDU TRANSLATE API KEY CONFIGURATION
+-- ============================================================================
+
+-- Pass Baidu Translate API credentials to the DLL.
+-- Keys are stored in WoWTranslateDB (WTF/SavedVariables) and never uploaded.
+-- Call this on addon load and whenever the user updates their keys.
+function WoWTranslate_API.SetBaiduKey(appid, secret)
+    if not dllAvailable then return false end
+    if not appid or appid == "" or not secret or secret == "" then
+        return false
+    end
+
+    local success, err = pcall(function()
+        UnitXP("WoWTranslate", "set_baidu_key", appid, secret)
+    end)
+    if not success then
+        return false
+    end
+    return true
+end
+
+-- ============================================================================
 -- DEBUG FUNCTIONS
 -- ============================================================================
 

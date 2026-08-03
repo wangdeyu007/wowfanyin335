@@ -70,6 +70,10 @@ private:
     std::thread workerThread;
     std::atomic<bool> running;
 
+    // Baidu API credentials (stored in memory only, set from Lua config)
+    std::string baiduAppId;
+    std::string baiduSecret;
+
     static const DWORD CACHE_EXPIRY_MS = 3600000;
     static const size_t MAX_CACHE_SIZE = 500;
 
@@ -79,11 +83,21 @@ private:
     std::string MapLangCode(const std::string& lang);
     std::string ParseGoogleFreeResponse(const std::string& json);
     std::string ParseTranSmartResponse(const std::string& json);
+    std::string ParseBaiduResponse(const std::string& json);
     std::string GenerateCacheKey(const std::string& text,
                                  const std::string& sourceLang,
                                  const std::string& targetLang);
     void CleanExpiredCache();
     void WorkerThreadFunc();
+
+    // Baidu Translate
+    std::string Md5Hex(const std::string& input);
+    std::string SimpleHttpsGet(const std::string& host, int port,
+                               const std::string& path,
+                               const std::string& referer = "");
+    TranslationResult TranslateBaidu(const std::string& text, std::string& result,
+                                     const std::string& sourceLang,
+                                     const std::string& targetLang);
 
 public:
     TranslationClient();
@@ -92,6 +106,9 @@ public:
     bool Initialize();
     void Cleanup();
     bool IsInitialized() const { return initialized; }
+
+    // Set Baidu API credentials (called from Lua)
+    void SetBaiduKey(const std::string& appid, const std::string& secret);
 
     TranslationResult TranslateText(const std::string& text, std::string& result,
                                     const std::string& sourceLang = "zh",
