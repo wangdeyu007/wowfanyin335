@@ -1,0 +1,83 @@
+name: Build & Package WoWTranslate
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Configure CMake
+      working-directory: dll
+      run: |
+        mkdir build
+        cd build
+        cmake .. -G "Visual Studio 17 2022" -A Win32
+
+    - name: Build DLL
+      working-directory: dll/build
+      run: cmake --build . --config Release
+
+    - name: Create Release Package
+      run: |
+        New-Item -ItemType Directory -Path WoWTranslate | Out-Null
+        Copy-Item dll/build/bin/Release/WoWTranslate.dll WoWTranslate/
+        Copy-Item dll/build/bin/Release/WoWTranslateInjector.exe WoWTranslate/
+        Copy-Item Interface WoWTranslate/Interface -Recurse
+        @'
+        WoWTranslate 安装说明 (WoW 3.3.5.12340)
+        =======================================
+
+        1. 把 WoWTranslate.dll 和 WoWTranslateInjector.exe 复制到游戏根目录
+           (和 Wow.exe 放在一起)。
+
+        2. 把 Interface 文件夹复制到游戏根目录,与已有的 Interface 合并。
+
+        3. 先正常启动 Wow.exe,然后双击 WoWTranslateInjector.exe。
+           它会找到 Wow.exe 进程并注入 DLL,打印「[成功] 已注入」。
+           注意:3.3.5 客户端没有 1.12 那种 dlls.txt 加载机制,必须用这个注入器。
+
+        4. 进游戏后输入 /wt ping 验证,应该回 pong。
+           全部命令:/wt show
+
+        每次重开游戏都要重新跑一次注入器。注入器可以在游戏启动前运行,
+        它会等最多 120 秒直到 Wow.exe 出现。
+        '@ | Set-Content -Path WoWTranslate/INSTALL.txt -Encoding UTF8
+      shell: pwsh
+
+    - name: Upload Package
+      uses: actions/upload-artifact@v4
+      with:
+        name: WoWTranslate-v${{ github.run_number }}
+        path: WoWTranslate/
+        if-no-files-found: error
+
+    - name: Create Release ZIP (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        Compress-Archive -Path WoWTranslate/* -DestinationPath WoWTranslate-${{ github.ref_name }}.zip
+      shell: pwsh
+
+    - name: Publish Release (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: WoWTranslate-${{ github.ref_name }}.zip
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

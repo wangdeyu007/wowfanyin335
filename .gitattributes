@@ -1,0 +1,8 @@
+# The 3.3.5 client is picky about the .toc: it must use CRLF and end with a
+# newline, or the addon silently fails to load. Don't let git normalize it.
+*.toc text eol=crlf
+
+# Binary — never touch
+*.lib binary
+*.dll binary
+*.exe binary
