@@ -60,7 +60,7 @@ jobs:
 
         每次重开游戏都要重新跑一次注入器。注入器可以在游戏启动前运行,
         它会等最多 120 秒直到 Wow.exe 出现。
-        '@ | Set-Content -Path WoWTranslate/INSTALL.txt -Encoding UTF8
+        '@ | Set-Content -Path WoWTranslate/INSTALL.txt -Encoding utf8BOM
       shell: pwsh
 
     - name: Upload Package
