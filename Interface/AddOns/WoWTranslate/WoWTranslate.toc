@@ -2,7 +2,7 @@
 ## Title: WoWTranslate
 ## Notes: Real-time chat translation for WoW 3.3.5
 ## Version: 1.5
-## Author: belthazor, WoWTranslateTeam
+## Author: belthazor, WoWTranslateTeam 夏姬汉化
 ## SavedVariables: WoWTranslateDB WoWTranslateCache WoWTranslateDebugLog
 
 WoWTranslate_Glossary.lua

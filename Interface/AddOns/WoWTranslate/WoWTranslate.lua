@@ -2594,6 +2594,7 @@ local function HookChatFrames(force)
                         local capturedEvent = event
                         local capturedArg1  = arg1
                         local capturedArg2  = arg2
+                        local capturedArg3  = arg3  -- not used by 1.12, but 3.3.5 has it; pass through to keep origScript arg positions stable
                         local capturedArg4  = arg4  -- channel name string for CHAT_MSG_CHANNEL
                         local capturedThis  = this
 
@@ -2637,7 +2638,7 @@ local function HookChatFrames(force)
                                 end
                             end
 
-                            local origOk, origErr = pcall(origScript)
+                            local origOk, origErr = pcall(origScript, capturedThis, capturedEvent, capturedArg1, capturedArg2, capturedArg3, capturedArg4)
 							
                             -- Always restore; never leave our wrapper or a nil in place.
                             capturedThis.AddMessage = origFrameAddMsg

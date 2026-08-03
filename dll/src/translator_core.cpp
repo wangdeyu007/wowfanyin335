@@ -174,11 +174,41 @@ bool TranslationClient::Initialize() {
 
     LOG_INFO("Initializing Google Free translation client");
 
-    hSession = WinHttpOpen(L"WoWTranslate/1.0",
-                           WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                           WINHTTP_NO_PROXY_NAME,
-                           WINHTTP_NO_PROXY_BYPASS,
-                           0);
+    // 3.3.5's WinHTTP with WINHTTP_ACCESS_TYPE_DEFAULT_PROXY reads the
+    // netsh winhttp config (empty by default → direct connection), NOT
+    // the IE/WinINET system proxy. Clash/v2ray set the system proxy via
+    // the IE registry keys, so we have to read them ourselves.
+    WINHTTP_CURRENT_USER_IE_PROXY_CONFIG ieConfig = {};
+    BOOL gotIEConfig = WinHttpGetIEProxyConfigForCurrentUser(&ieConfig);
+    BOOL hasIEProxy  = gotIEConfig
+                       && ieConfig.lpszProxy
+                       && ieConfig.lpszProxy[0] != L'\0';
+
+    if (hasIEProxy) {
+        std::wstring proxyW(ieConfig.lpszProxy);
+        std::string  proxyA(proxyW.begin(), proxyW.end());  // proxy URLs are ASCII
+        LOG_INFO("Using IE system proxy: " + proxyA);
+        hSession = WinHttpOpen(L"WoWTranslate/1.0",
+                               WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                               ieConfig.lpszProxy,
+                               ieConfig.lpszProxyBypass ? ieConfig.lpszProxyBypass
+                                                        : WINHTTP_NO_PROXY_BYPASS,
+                               0);
+    } else {
+        LOG_INFO("No IE system proxy configured, connecting directly");
+        hSession = WinHttpOpen(L"WoWTranslate/1.0",
+                               WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                               WINHTTP_NO_PROXY_NAME,
+                               WINHTTP_NO_PROXY_BYPASS,
+                               0);
+    }
+
+    // WinHttpGetIEProxyConfigForCurrentUser allocates these with GlobalAlloc;
+    // must free or we leak per Initialize() call.
+    if (ieConfig.lpszAutoConfigUrl) GlobalFree(ieConfig.lpszAutoConfigUrl);
+    if (ieConfig.lpszProxy)         GlobalFree(ieConfig.lpszProxy);
+    if (ieConfig.lpszProxyBypass)   GlobalFree(ieConfig.lpszProxyBypass);
+
     if (!hSession) {
         LOG_ERROR("Failed to initialize WinHTTP session");
         return false;
