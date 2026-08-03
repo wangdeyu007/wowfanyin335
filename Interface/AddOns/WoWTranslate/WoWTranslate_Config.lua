@@ -556,13 +556,6 @@ local function SaveBaiduKey()
     end
 end
 
--- 在保存时同时保存百度 key
-local origSaveFunc = saveBtn:GetScript("OnClick")
-saveBtn:SetScript("OnClick", function()
-    SaveBaiduKey()
-    if origSaveFunc then origSaveFunc() end
-end)
-
 configFrame.elements.baiduAppIdInput = baiduAppIdInput
 configFrame.elements.baiduSecretInput = baiduSecretInput
 
@@ -585,6 +578,7 @@ saveBtn:SetWidth(80)
 saveBtn:SetHeight(26)
 saveBtn:SetText("保存")
 saveBtn:SetScript("OnClick", function()
+    SaveBaiduKey()
     SaveTempConfig()
     DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[聊天翻译] 设置已保存！|r")
     configFrame:Hide()
