@@ -77,7 +77,7 @@ end
 local configFrame = CreateFrame("Frame", "WoWTranslateConfigFrame", UIParent)
 configFrame:Hide()
 configFrame:SetWidth(580)
-configFrame:SetHeight(800)
+configFrame:SetHeight(870)
 configFrame:SetPoint("CENTER", 0, 0)
 configFrame:SetMovable(true)
 configFrame:EnableMouse(true)
@@ -89,8 +89,8 @@ configFrame:SetFrameStrata("DIALOG")
 -- 不会缩小内容——所以按实际可用高度整体缩放。
 configFrame:SetScript("OnShow", function()
     local avail = UIParent:GetHeight() - 16
-    if avail > 0 and avail < 800 then
-        this:SetScale(avail / 800)
+    if avail > 0 and avail < 870 then
+        this:SetScale(avail / 870)
     else
         this:SetScale(1)
     end
