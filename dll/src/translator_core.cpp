@@ -1,5 +1,6 @@
 // translator_core.cpp - Translation functionality for WoWTranslate
-// Sends GET requests to translate.googleapis.com (client=gtx) — no API key required
+// Sends POST requests to transmart.qq.com /api/imt (Tencent TranSmart free tier).
+// No API key required; reachable from mainland China without VPN.
 
 #include <windows.h>
 #include <winhttp.h>
@@ -169,10 +170,10 @@ TranslationClient::~TranslationClient() {
 bool TranslationClient::Initialize() {
     if (initialized) Cleanup();
 
-    const std::string host = "translate.googleapis.com";
+    const std::string host = "transmart.qq.com";
     const int port = 443;
 
-    LOG_INFO("Initializing Google Free translation client");
+    LOG_INFO("Initializing TranSmart (Tencent) translation client");
 
     // 3.3.5's WinHTTP with WINHTTP_ACCESS_TYPE_DEFAULT_PROXY reads the
     // netsh winhttp config (empty by default → direct connection), NOT
@@ -221,7 +222,7 @@ bool TranslationClient::Initialize() {
     hConnect = WinHttpConnect(hSession, wHost.c_str(),
                               static_cast<INTERNET_PORT>(port), 0);
     if (!hConnect) {
-        LOG_ERROR("Failed to connect to translate.googleapis.com");
+        LOG_ERROR("Failed to connect to transmart.qq.com");
         WinHttpCloseHandle(hSession);
         hSession = nullptr;
         return false;
@@ -230,7 +231,7 @@ bool TranslationClient::Initialize() {
     running = true;
     workerThread = thread(&TranslationClient::WorkerThreadFunc, this);
     initialized = true;
-    LOG_INFO("Google Free translation client initialized");
+    LOG_INFO("TranSmart translation client initialized");
     return true;
 }
 
@@ -371,6 +372,122 @@ string TranslationClient::HttpsGet(const string& path) {
     return response;
 }
 
+// POST application/json over the existing secure connection, return body.
+string TranslationClient::HttpsPostJson(const string& path, const string& body) {
+    if (!hConnect) return "";
+
+    wstring wPath(path.begin(), path.end());
+
+    HINTERNET hRequest = WinHttpOpenRequest(
+        hConnect, L"POST", wPath.c_str(), nullptr,
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+        WINHTTP_FLAG_SECURE);
+
+    if (!hRequest) {
+        LOG_ERROR("Failed to open POST request");
+        return "";
+    }
+
+    // TranSmart rejects requests that don't look like they came from
+    // transmart.qq.com — must set Origin/Referer/User-Agent.
+    wstring headers = L"Content-Type: application/json\r\n";
+    headers += L"Origin: https://transmart.qq.com\r\n";
+    headers += L"Referer: https://transmart.qq.com/\r\n";
+    headers += L"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+               L"AppleWebKit/537.36 (KHTML, like Gecko) "
+               L"Chrome/120.0.0.0 Safari/537.36\r\n";
+    WinHttpAddRequestHeaders(hRequest, headers.c_str(), (DWORD)-1,
+                             WINHTTP_ADDREQ_FLAG_ADD);
+
+    BOOL result = WinHttpSendRequest(hRequest,
+                                     WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                     (LPVOID)body.c_str(),
+                                     (DWORD)body.length(),
+                                     (DWORD)body.length(),
+                                     0);
+
+    string response;
+    if (result && WinHttpReceiveResponse(hRequest, nullptr)) {
+        DWORD statusCode = 0;
+        DWORD statusLen  = sizeof(DWORD);
+        WinHttpQueryHeaders(hRequest,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX,
+            &statusCode, &statusLen,
+            WINHTTP_NO_HEADER_INDEX);
+        if (statusCode == 429) {
+            LOG_WARNING("Rate limited by TranSmart (HTTP 429)");
+            WinHttpCloseHandle(hRequest);
+            return "HTTP_429";
+        }
+
+        DWORD bytesAvailable = 0;
+        char buffer[8192];
+        while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable)
+               && bytesAvailable > 0) {
+            DWORD bytesRead = 0;
+            DWORD bytesToRead = min(bytesAvailable, (DWORD)(sizeof(buffer) - 1));
+            if (WinHttpReadData(hRequest, buffer, bytesToRead, &bytesRead)) {
+                buffer[bytesRead] = '\0';
+                response += string(buffer, bytesRead);
+            } else {
+                break;
+            }
+        }
+    } else {
+        LOG_ERROR("POST request failed: " + to_string(GetLastError()));
+    }
+
+    WinHttpCloseHandle(hRequest);
+    return response;
+}
+
+string TranslationClient::ParseTranSmartResponse(const string& json) {
+    // Response shape:
+    //   { "header": {...}, "auto_translation": [ { "translated_text_list": ["..."] } ] }
+    // Pull the first string out of translated_text_list.
+    string key = "\"translated_text_list\"";
+    size_t keyPos = json.find(key);
+    if (keyPos == string::npos) return "";
+
+    size_t arrStart = json.find('[', keyPos);
+    if (arrStart == string::npos) return "";
+
+    size_t pos = json.find('"', arrStart);
+    if (pos == string::npos) return "";
+    pos++;  // skip opening "
+
+    string segment;
+    while (pos < json.size() && json[pos] != '"') {
+        if (json[pos] == '\\' && pos + 1 < json.size()) {
+            pos++;
+            switch (json[pos]) {
+                case '"':  segment += '"';  break;
+                case '\\': segment += '\\'; break;
+                case 'n':  segment += '\n'; break;
+                case 'r':  segment += '\r'; break;
+                case 't':  segment += '\t'; break;
+                case 'u': {
+                    if (pos + 4 < json.size()) {
+                        string hex = json.substr(pos + 1, 4);
+                        try {
+                            unsigned int cp = stoul(hex, nullptr, 16);
+                            segment += ConvertCodepointToUTF8(cp);
+                            pos += 4;
+                        } catch (...) {}
+                    }
+                    break;
+                }
+                default: segment += json[pos]; break;
+            }
+        } else {
+            segment += json[pos];
+        }
+        pos++;
+    }
+    return segment;
+}
+
 string TranslationClient::ParseGoogleFreeResponse(const string& json) {
     string result;
 
@@ -445,31 +562,54 @@ TranslationResult TranslationClient::TranslateText(const string& text, string& r
 
     CleanExpiredCache();
 
-    // Build Google Free GET path
-    string sl = MapLangCode(sourceLang);
-    string tl = MapLangCode(targetLang);
-    string path = "/translate_a/single?client=gtx&sl=" + sl +
-                  "&tl=" + tl + "&dt=t&q=" + UrlEncode(text);
+    // Build TranSmart POST body. Language codes are the short forms TranSmart
+    // accepts: "zh", "en", "ru", "ja", "ko", or "auto" for source.
+    string sl = sourceLang;
+    string tl = targetLang;
+    if (sl == "zh-CN") sl = "zh";
+    if (sl == "zh-TW") sl = "zh-TW";
+    if (tl == "zh-CN") tl = "zh";
 
-    LOG_DEBUG("GET " + path.substr(0, 120));
+    // JSON-escape the input text (only the chars that break the body literal)
+    string escaped;
+    escaped.reserve(text.size() + 8);
+    for (unsigned char c : text) {
+        switch (c) {
+            case '"':  escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\n': escaped += "\\n";  break;
+            case '\r': escaped += "\\r";  break;
+            case '\t': escaped += "\\t";  break;
+            default:   escaped += (char)c; break;
+        }
+    }
 
-    string response = HttpsGet(path);
+    string body = string("{\"header\":{\"fn\":\"auto_translation\",")
+                  + "\"client_key\":\"desktop-chrome\"},"
+                  + "\"type\":\"Plain\",\"model_category\":\"normal\","
+                  + "\"source\":{\"lang_code\":\"" + sl
+                  + "\",\"text_list\":[\"" + escaped + "\"]},"
+                  + "\"target\":{\"lang_code\":\"" + tl + "\"}}";
+
+    LOG_DEBUG("POST /api/imt body=" + body.substr(0, min<size_t>(body.size(), 200)));
+
+    string response = HttpsPostJson("/api/imt", body);
 
     if (response == "HTTP_429") {
         return TranslationResult::RATE_LIMITED;
     }
 
     if (response.empty()) {
-        LOG_ERROR("Empty response from Google Free");
+        LOG_ERROR("Empty response from TranSmart");
         return TranslationResult::NETWORK_ERROR;
     }
 
     LOG_DEBUG("Response: " + response.substr(0, 200));
 
-    string translation = ParseGoogleFreeResponse(response);
+    string translation = ParseTranSmartResponse(response);
 
     if (translation.empty()) {
-        LOG_ERROR("Failed to parse Google Free response");
+        LOG_ERROR("Failed to parse TranSmart response: " + response.substr(0, 200));
         return TranslationResult::API_ERROR;
     }
 
