@@ -75,8 +75,10 @@ private:
 
     std::string UrlEncode(const std::string& text);
     std::string HttpsGet(const std::string& path);
+    std::string HttpsPostJson(const std::string& path, const std::string& body);
     std::string MapLangCode(const std::string& lang);
     std::string ParseGoogleFreeResponse(const std::string& json);
+    std::string ParseTranSmartResponse(const std::string& json);
     std::string GenerateCacheKey(const std::string& text,
                                  const std::string& sourceLang,
                                  const std::string& targetLang);
