@@ -27,7 +27,10 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake .. -G "Visual Studio 17 2022" -A Win32
+        # No -G: windows-latest ships whatever VS is current (2026 as of now),
+        # so pinning "Visual Studio 17 2022" breaks configure. -A Win32 is the
+        # part that matters — WoW is a 32-bit process.
+        cmake .. -A Win32
 
     - name: Build DLL
       working-directory: dll/build

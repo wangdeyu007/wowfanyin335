@@ -26,7 +26,7 @@ jobs:
       run: |
         mkdir build
         cd build
-        cmake .. -G "Visual Studio 17 2022" -A Win32
+        cmake .. -A Win32
 
     - name: Build Release
       working-directory: dll/build
