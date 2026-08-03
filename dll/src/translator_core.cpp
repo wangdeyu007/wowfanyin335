@@ -443,10 +443,12 @@ string TranslationClient::HttpsPostJson(const string& path, const string& body) 
 }
 
 string TranslationClient::ParseTranSmartResponse(const string& json) {
-    // Response shape:
-    //   { "header": {...}, "auto_translation": [ { "translated_text_list": ["..."] } ] }
-    // Pull the first string out of translated_text_list.
-    string key = "\"translated_text_list\"";
+    // Actual response shape (confirmed live):
+    //   { "header": {...}, "auto_translation": ["译后文本"], "src_lang": "en", ... }
+    // It is a flat string array — earlier guess of an array of objects with
+    // a "translated_text_list" key was wrong; TranSmart returns the segment
+    // directly in auto_translation[0].
+    string key = "\"auto_translation\"";
     size_t keyPos = json.find(key);
     if (keyPos == string::npos) return "";
 
